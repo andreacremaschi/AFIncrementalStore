@@ -277,6 +277,22 @@
                                forObjectWithID:(NSManagedObjectID *)objectID
                         inManagedObjectContext:(NSManagedObjectContext *)context;
 
+/**
+ Returns whether the response after a CRUD operation represent an error or a success.
+ 
+ @param responseObject The dictionary returned after the CRUD operation
+ @param request The CRUD operation request
+ @param response The full response object
+ @param error The error
+ 
+ @return `YES` the operation went right, otherwise 'NO'.
+ */
+
+- (BOOL) parseCRUDOperationResult: (NSData *) responseObject
+                          request: (NSURLRequest *)request
+                         response: (NSURLResponse *)response
+                            error: (NSError **)error;
+
 @end
 
 ///----------------
@@ -293,6 +309,7 @@
 extern NSString * AFReferenceObjectFromResourceIdentifier(NSString *resourceIdentifier);
 
 extern NSString * AFResourceIdentifierFromReferenceObject(id referenceObject);
+extern NSString * AFResourceIdentifierFromReferenceObjectID(NSManagedObjectID *objectID);
 
 ///----------------
 /// @name Constants
@@ -302,6 +319,8 @@ extern NSString * AFResourceIdentifierFromReferenceObject(id referenceObject);
  The name of the exception called when `AFIncrementalStore` or a subclass is attempted to be used, without implementing one of the required methods.
  */
 extern NSString * const AFIncrementalStoreUnimplementedMethodException;
+extern NSString * const AFIncrementalStoreErrorDomain;
+
 
 ///--------------------
 /// @name Notifications
