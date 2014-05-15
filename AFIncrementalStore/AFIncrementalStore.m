@@ -315,6 +315,7 @@ static inline void AFSaveManagedObjectContextOrThrowInternalConsistencyException
                                                           response: response
                                                              error: &resultError];
             if (!result) {
+                NSLog(@"Error while saving data: %@", resultError.localizedDescription);
                 *error = resultError;
                 *stop = YES;
             }
@@ -337,11 +338,13 @@ static inline void AFSaveManagedObjectContextOrThrowInternalConsistencyException
     NSMutableArray *keysArray = [NSMutableArray arrayWithCapacity: representations.count];
     for (NSDictionary *representation in representations) {
         NSString *resourceIdentifier = [self.HTTPClient resourceIdentifierForRepresentation:representation ofEntity:entity fromResponse:responseObject];
-        NSDictionary *attributes = [self.HTTPClient attributesForRepresentation:representation ofEntity:entity fromResponse:responseObject];
+        // NSDictionary *attributes = [self.HTTPClient attributesForRepresentation:representation ofEntity:entity fromResponse:responseObject];
 
+        NSAssert( [resourceIdentifier isKindOfClass: [NSString class]] || [resourceIdentifier isKindOfClass: [NSNumber class]],
+                 @"Error: reference object must be of type NSString or NSNumber");
         NSManagedObjectID *objectID = [self newObjectIDForEntity: entity referenceObject:resourceIdentifier];
         [keysArray addObject:objectID];
-        [_rowCache setObject:attributes forKey: objectID];
+        [_rowCache setObject:representation forKey: objectID];
 
     }
     
@@ -360,6 +363,19 @@ static inline void AFSaveManagedObjectContextOrThrowInternalConsistencyException
         id responseObject = [NSJSONSerialization JSONObjectWithData: data
                                                             options: kNilOptions
                                                               error: error];
+        
+        NSError *resultError;
+        BOOL result = YES;
+        if ([self.HTTPClient respondsToSelector:@selector(parseCRUDOperationResult:request:response:error:)])
+            result = [self.HTTPClient parseCRUDOperationResult: data
+                                                       request: request
+                                                      response: response
+                                                         error: &resultError];
+        if (!result) {
+            NSLog(@"Webservice returned error while performing request: %@\nError: %@", request, resultError.localizedDescription);
+            return nil;
+        }
+        
         NSArray *objectIDs = [self arrayOfObjectIDsFromResponse:responseObject entity:fetchRequest.entity];
         
         return objectIDs;
@@ -380,7 +396,7 @@ static inline void AFSaveManagedObjectContextOrThrowInternalConsistencyException
         _backingObjectIDByObjectID = [[NSCache alloc] init];
         _registeredObjectIDsByEntityNameAndNestedResourceIdentifier = [[NSMutableDictionary alloc] init];
         
-        NSManagedObjectModel *model = [self.persistentStoreCoordinator.managedObjectModel copy];
+/*        NSManagedObjectModel *model = [self.persistentStoreCoordinator.managedObjectModel copy];
         for (NSEntityDescription *entity in model.entities) {
             // Don't add properties for sub-entities, as they already exist in the super-entity
             if ([entity superentity]) {
@@ -401,6 +417,7 @@ static inline void AFSaveManagedObjectContextOrThrowInternalConsistencyException
         }
         
         _backingPersistentStoreCoordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+ */
         _rowCache = [NSMutableDictionary dictionary];
         
         return YES;
@@ -424,6 +441,9 @@ static inline void AFSaveManagedObjectContextOrThrowInternalConsistencyException
             if ([responseObject.allKeys containsObject: @"objectId"]) {
                 NSString *resourceIdentifier = responseObject[@"objectId"];
 //                NSURL *locationURL = [NSURL URLWithString:location];
+                NSAssert( [resourceIdentifier isKindOfClass: [NSString class]] || [resourceIdentifier isKindOfClass: [NSNumber class]],
+                         @"Error: reference object must be of type NSString or NSNumber");
+
                 NSManagedObjectID *objectID = [self newObjectIDForEntity:managedObject.entity referenceObject:resourceIdentifier];
                 [mutablePermanentIDs addObject:objectID];
             } else {
@@ -464,7 +484,7 @@ static inline void AFSaveManagedObjectContextOrThrowInternalConsistencyException
 //    NSString *uniqueIdentifier = AFResourceIdentifierFromReferenceObjectID( objectID );
     NSIncrementalStoreNode *node;
     
-    NSDictionary *attributes = [_rowCache objectForKey: objectID];
+    NSMutableDictionary *attributes = [_rowCache objectForKey: objectID];
     if (attributes) [_rowCache removeObjectForKey: objectID];
     
     if (!attributes) {
@@ -477,6 +497,20 @@ static inline void AFSaveManagedObjectContextOrThrowInternalConsistencyException
                                                                 options: kNilOptions
                                                                   error: error];
             
+            
+            NSError *resultError;
+            BOOL result = YES;
+            if ([self.HTTPClient respondsToSelector:@selector(parseCRUDOperationResult:request:response:error:)])
+                result = [self.HTTPClient parseCRUDOperationResult: data
+                                                           request: request
+                                                          response: response
+                                                             error: &resultError];
+            if (!result) {
+                NSLog(@"Webservice returned error while performing request: %@\nError: %@", request, resultError.localizedDescription);
+                return nil;
+            }
+
+            
             // TODO: check for errors
             if ([responseObject isKindOfClass:[NSDictionary class]])
                 attributes = responseObject;
@@ -484,39 +518,58 @@ static inline void AFSaveManagedObjectContextOrThrowInternalConsistencyException
         }
     }
     
+    /*From the docs:
+     Core Data simply ignores extraneous key-value pairs in the dictionary you use to create the
+     incremental store node. Attributes absent from the dictionary are assumed to be nil. Core Data
+     faults in missing relationships later. Represent nil to-one relationships with [NSNull null].*/
+    
     if (attributes) {
+
         
-        // remove relationships representation from the object representation
+        NSMutableDictionary *dict = [attributes mutableCopy];
+
         NSEntityDescription *entity = objectID.entity;
-        NSDictionary *relationshipsByName = [entity relationshipsByName];
-        NSArray *relationshipsNames = relationshipsByName.allKeys;
-        if (relationshipsNames.count>0) {
-            
-            NSMutableDictionary *dict = [attributes mutableCopy];
-            for (id relationshipName in relationshipsNames) {
-                
-                NSRelationshipDescription *relationship= relationshipsByName[relationshipName];
-                if ([relationship isToMany]) {
-                    [dict removeObjectForKey:relationshipName];
-                } else {
-                    // to-1
-                    id relationshipRepresentation = dict[relationshipName];
-                    
-                    NSEntityDescription *destinationEntity = relationship.destinationEntity;
-                    NSString *resourceIdentifier = [self.HTTPClient resourceIdentifierForRepresentation: relationshipRepresentation
-                                                                                               ofEntity: destinationEntity
-                                                                                           fromResponse: nil];
-                    NSManagedObjectID *objectID = [self newObjectIDForEntity: destinationEntity referenceObject:resourceIdentifier];
-                    [dict setObject:objectID forKey: relationshipName];
-                    
-                }
-                
-            }
-            attributes = dict;
-        }
+
+        // give a chance to the client to transform the response
+        attributes = [[self.HTTPClient attributesForRepresentation:attributes ofEntity:entity fromResponse:nil] mutableCopy];
         
+        // remove [NSNull null] attribute's values (but not for to-1 values)
+        NSSet *nullValueKeys = [attributes keysOfEntriesPassingTest:^BOOL(id key, id obj, BOOL *stop) {
+            BOOL isAttribute = [entity.attributesByName.allKeys containsObject: key];
+            return isAttribute && [obj isEqualTo:[NSNull null]];
+        }];
+        [attributes removeObjectsForKeys: nullValueKeys.allObjects];
+                                 
+        // map to-1 relationships to object IDs
+        // or set to null if not present
+        NSSet *toOneRelationships = [[entity relationshipsByName] keysOfEntriesPassingTest:^BOOL(id key, NSRelationshipDescription *obj, BOOL *stop) {
+            return !obj.isToMany;
+        }];
+
+        [toOneRelationships enumerateObjectsUsingBlock:^(NSString *key, BOOL *stop) {
+            id toOneRelationshipRepresentation = attributes[key];
+            if (toOneRelationshipRepresentation) {
+                NSRelationshipDescription *relationship = [entity relationshipsByName][key];
+                NSEntityDescription *destinationEntity = relationship.destinationEntity;
+                NSString *resourceIdentifier = [self.HTTPClient resourceIdentifierForRepresentation: toOneRelationshipRepresentation
+                                                                                           ofEntity: destinationEntity
+                                                                                       fromResponse: nil];
+                
+                if ([resourceIdentifier isKindOfClass:[NSString class]]) {
+                    NSManagedObjectID *objectID = [self newObjectIDForEntity: destinationEntity
+                                                             referenceObject:resourceIdentifier];
+                    
+                    [attributes setObject:objectID forKey: key];
+                } else
+                    [attributes setObject:[NSNull null] forKey: key];
+                
+            } else {
+                [attributes setObject:[NSNull null] forKey: key];
+            }
+        }];
         
         node = [[NSIncrementalStoreNode alloc] initWithObjectID:objectID withValues:attributes version:1];
+        
     }
     
     return node;
